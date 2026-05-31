@@ -1,102 +1,23 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import time
 import copy
-from generator import generate_puzzle, get_hint
-from validator import validate_move, is_complete, count_mistakes
+import json
+from generator import generate_puzzle, get_hint, get_box_size
+from validator import is_complete, count_mistakes
 
-# ── Page config ──────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Sudoku",
-    page_icon="🔢",
-    layout="centered",
-)
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Sudoku", page_icon="🔢", layout="centered")
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Syne', sans-serif;
-}
-
-h1 { font-family: 'Syne', sans-serif; font-weight: 800; letter-spacing: -1px; }
-
-/* Sudoku grid table */
-.sudoku-table {
-    border-collapse: collapse;
-    margin: 0 auto 1.5rem auto;
-}
-.sudoku-table td {
-    width: 44px; height: 44px;
-    text-align: center; vertical-align: middle;
-    font-family: 'Space Mono', monospace;
-    font-size: 1.1rem;
-    border: 1px solid #ccc;
-    background: #fff;
-    color: #1a1a2e;
-    padding: 0;
-}
-.sudoku-table td.given {
-    background: #f0f4ff;
-    font-weight: 700;
-    color: #1a1a2e;
-}
-.sudoku-table td.wrong {
-    color: #e63946;
-}
-.sudoku-table td.hint-cell {
-    background: #d4f7dc;
-    color: #2d6a4f;
-    font-weight: 700;
-}
-.sudoku-table td.box-right  { border-right:  2.5px solid #333; }
-.sudoku-table td.box-bottom { border-bottom: 2.5px solid #333; }
-
-/* Stat pill */
-.stat-pill {
-    display: inline-block;
-    background: #1a1a2e;
-    color: #e2e8f0;
-    border-radius: 999px;
-    padding: 4px 14px;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.85rem;
-    margin: 2px 4px;
-}
-
-/* Win banner */
-.win-banner {
-    background: linear-gradient(135deg, #06d6a0, #118ab2);
-    color: white;
-    border-radius: 12px;
-    padding: 1.2rem 2rem;
-    text-align: center;
-    font-size: 1.4rem;
-    font-weight: 800;
-    margin-bottom: 1rem;
-    letter-spacing: -0.5px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ── Session state helpers ─────────────────────────────────────────────────────
+# ── Session state ─────────────────────────────────────────────────────────────
 def init_state():
     defaults = {
-        "puzzle":       None,
-        "solution":     None,
-        "board":        None,
-        "given":        None,   # mask of pre-filled cells
-        "n":            9,
-        "difficulty":   "Medium",
-        "undo_stack":   [],
-        "redo_stack":   [],
-        "start_time":   None,
-        "elapsed":      0,
-        "running":      False,
-        "mistakes":     0,
-        "hint_cell":    None,   # (row, col) last hinted
-        "won":          False,
+        "puzzle": None, "solution": None, "board": None, "given": None,
+        "n": 9, "difficulty": "Medium",
+        "undo_stack": [], "redo_stack": [],
+        "start_time": None, "elapsed": 0, "running": False,
+        "won": False, "hint_cell": None,
+        "last_move": None,   # injected by component → {"r","c","v"}
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -113,11 +34,11 @@ def new_game(n, difficulty):
         n=n, difficulty=difficulty,
         undo_stack=[], redo_stack=[],
         start_time=time.time(), elapsed=0, running=True,
-        mistakes=0, hint_cell=None, won=False,
+        won=False, hint_cell=None, last_move=None,
     )
 
-def push_undo(board):
-    st.session_state.undo_stack.append(copy.deepcopy(board))
+def push_undo():
+    st.session_state.undo_stack.append(copy.deepcopy(st.session_state.board))
     st.session_state.redo_stack.clear()
 
 def undo():
@@ -135,8 +56,8 @@ def redo():
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ New Game")
-    grid_size   = st.selectbox("Grid size",   [6, 9, 16], index=1)
-    difficulty  = st.selectbox("Difficulty",  ["Easy", "Medium", "Hard", "Expert"], index=1)
+    grid_size  = st.selectbox("Grid size",  [6, 9, 16], index=1)
+    difficulty = st.selectbox("Difficulty", ["Easy", "Medium", "Hard", "Expert"], index=1)
     if st.button("▶  Start New Game", use_container_width=True):
         new_game(grid_size, difficulty)
         st.rerun()
@@ -155,15 +76,14 @@ with st.sidebar:
         h = get_hint(st.session_state.board, st.session_state.solution)
         if h:
             r, c, v = h
-            push_undo(st.session_state.board)
+            push_undo()
             st.session_state.board[r][c] = v
             st.session_state.hint_cell = (r, c)
             st.rerun()
 
     if st.button("✅ Validate", use_container_width=True):
-        n = st.session_state.n
         st.session_state.mistakes = count_mistakes(
-            st.session_state.board, st.session_state.solution, n)
+            st.session_state.board, st.session_state.solution, st.session_state.n)
         st.rerun()
 
 # ── Title ─────────────────────────────────────────────────────────────────────
@@ -172,6 +92,18 @@ st.markdown("# 🔢 Sudoku")
 if st.session_state.board is None:
     st.info("Choose a grid size and difficulty in the sidebar, then press **Start New Game**.")
     st.stop()
+
+# ── Apply any move sent from the JS component ─────────────────────────────────
+move = st.session_state.get("last_move")
+if move and isinstance(move, dict):
+    r, c, v = move["r"], move["c"], move["v"]
+    n = st.session_state.n
+    given = st.session_state.given
+    if not given[r][c]:
+        push_undo()
+        st.session_state.board[r][c] = v
+        st.session_state.hint_cell = None
+    st.session_state.last_move = None
 
 # ── Timer ─────────────────────────────────────────────────────────────────────
 n = st.session_state.n
@@ -182,93 +114,278 @@ else:
 mins, secs = divmod(elapsed, 60)
 timer_str = f"{mins:02d}:{secs:02d}"
 
-# ── Stats row ─────────────────────────────────────────────────────────────────
-st.markdown(
-    f'<span class="stat-pill">⏱ {timer_str}</span>'
-    f'<span class="stat-pill">🎯 {n}×{n}</span>'
-    f'<span class="stat-pill">📊 {st.session_state.difficulty}</span>'
-    f'<span class="stat-pill">❌ {st.session_state.mistakes} mistakes</span>',
-    unsafe_allow_html=True,
-)
-st.markdown("")
-
 # ── Win check ─────────────────────────────────────────────────────────────────
 if is_complete(st.session_state.board, n):
     if not st.session_state.won:
         st.session_state.won = True
         st.session_state.running = False
         st.session_state.elapsed = time.time() - st.session_state.start_time
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+mistakes = st.session_state.get("mistakes", 0)
+st.markdown(
+    f'<style>@import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@700;800&display=swap");</style>'
+    f'<div style="font-family:Space Mono,monospace;margin-bottom:12px">'
+    f'<span style="background:#1a1a2e;color:#e2e8f0;border-radius:999px;padding:4px 14px;margin:2px 4px;font-size:.85rem">⏱ {timer_str}</span>'
+    f'<span style="background:#1a1a2e;color:#e2e8f0;border-radius:999px;padding:4px 14px;margin:2px 4px;font-size:.85rem">🎯 {n}×{n}</span>'
+    f'<span style="background:#1a1a2e;color:#e2e8f0;border-radius:999px;padding:4px 14px;margin:2px 4px;font-size:.85rem">📊 {st.session_state.difficulty}</span>'
+    f'<span style="background:#1a1a2e;color:#e2e8f0;border-radius:999px;padding:4px 14px;margin:2px 4px;font-size:.85rem">❌ {mistakes} mistakes</span>'
+    f'</div>',
+    unsafe_allow_html=True,
+)
+
+if st.session_state.won:
     st.markdown(
-        f'<div class="win-banner">🎉 Puzzle Solved in {timer_str}!</div>',
+        f'<div style="background:linear-gradient(135deg,#06d6a0,#118ab2);color:white;border-radius:12px;'
+        f'padding:1.2rem 2rem;text-align:center;font-size:1.4rem;font-weight:800;margin-bottom:1rem;'
+        f'font-family:Syne,sans-serif">🎉 Puzzle Solved in {timer_str}!</div>',
         unsafe_allow_html=True,
     )
 
-# ── Build HTML grid ───────────────────────────────────────────────────────────
-from generator import get_box_size
+# ── Build interactive HTML/JS grid ────────────────────────────────────────────
 br, bc = get_box_size(n)
 board    = st.session_state.board
 given    = st.session_state.given
 solution = st.session_state.solution
 hint_cell = st.session_state.hint_cell
 
-def cell_html(r, c):
-    val = board[r][c]
-    classes = []
-    if given[r][c]:
-        classes.append("given")
-    elif val != 0 and val != solution[r][c]:
-        classes.append("wrong")
-    if hint_cell and hint_cell == (r, c):
-        classes.append("hint-cell")
-    # thick borders for box boundaries
-    if (c + 1) % bc == 0 and c != n - 1:
-        classes.append("box-right")
-    if (r + 1) % br == 0 and r != n - 1:
-        classes.append("box-bottom")
-    cls = " ".join(classes)
-    display = str(val) if val != 0 else "&nbsp;"
-    return f'<td class="{cls}">{display}</td>'
+# Serialise board state for JS
+board_json   = json.dumps(board)
+given_json   = json.dumps(given)
+solution_json = json.dumps(solution)
+hint_json    = json.dumps(list(hint_cell) if hint_cell else None)
+won_json     = json.dumps(st.session_state.won)
 
-rows_html = ""
-for r in range(n):
-    row_html = "".join(cell_html(r, c) for c in range(n))
-    rows_html += f"<tr>{row_html}</tr>"
+cell_size = 48 if n <= 9 else 34
+grid_px   = cell_size * n + 4
 
-grid_html = f'<table class="sudoku-table">{rows_html}</table>'
-st.markdown(grid_html, unsafe_allow_html=True)
+html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap');
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ background: transparent; display: flex; flex-direction: column; align-items: center; padding: 8px 0; }}
 
-# ── Input form ────────────────────────────────────────────────────────────────
-if not st.session_state.won:
-    st.markdown("### ✏️ Enter a value")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        row_in = st.number_input("Row",    min_value=1, max_value=n, step=1, key="row_in")
-    with col2:
-        col_in = st.number_input("Column", min_value=1, max_value=n, step=1, key="col_in")
-    with col3:
-        val_in = st.number_input("Value",  min_value=1, max_value=n, step=1, key="val_in")
+  #grid {{
+    display: grid;
+    grid-template-columns: repeat({n}, {cell_size}px);
+    grid-template-rows:    repeat({n}, {cell_size}px);
+    border: 2.5px solid #1a1a2e;
+    gap: 0;
+    width: {grid_px}px;
+  }}
 
-    sub1, sub2 = st.columns([2, 1])
-    with sub1:
-        if st.button("Place value", use_container_width=True):
-            r, c, v = int(row_in) - 1, int(col_in) - 1, int(val_in)
-            if given[r][c]:
-                st.warning("That cell is pre-filled — choose an empty cell.")
-            else:
-                push_undo(board)
-                board[r][c] = v
-                st.session_state.hint_cell = None
-                st.rerun()
-    with sub2:
-        if st.button("🗑 Clear cell", use_container_width=True):
-            r, c = int(row_in) - 1, int(col_in) - 1
-            if not given[r][c]:
-                push_undo(board)
-                board[r][c] = 0
-                st.session_state.hint_cell = None
-                st.rerun()
+  .cell {{
+    width: {cell_size}px; height: {cell_size}px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Space Mono', monospace;
+    font-size: {"1.1rem" if n <= 9 else ".8rem"};
+    border: 1px solid #bbb;
+    cursor: pointer;
+    user-select: none;
+    transition: background .1s;
+    color: #1a1a2e;
+    background: #fff;
+    position: relative;
+  }}
+  .cell.given      {{ background: #eef2ff; font-weight: 700; cursor: default; }}
+  .cell.selected   {{ background: #bfdbfe !important; outline: 2px solid #3b82f6; outline-offset: -2px; z-index: 2; }}
+  .cell.peer       {{ background: #e0e7ff; }}
+  .cell.wrong      {{ color: #e63946; }}
+  .cell.hint-cell  {{ background: #d4f7dc; color: #2d6a4f; font-weight: 700; }}
+  .cell.box-right  {{ border-right:  2.5px solid #1a1a2e; }}
+  .cell.box-bottom {{ border-bottom: 2.5px solid #1a1a2e; }}
 
-# ── Auto-refresh while running ────────────────────────────────────────────────
+  /* Number pad */
+  #numpad {{
+    display: flex; flex-wrap: wrap; gap: 6px;
+    justify-content: center;
+    margin-top: 14px;
+    width: {min(grid_px, 9 * 46)}px;
+  }}
+  .num-btn {{
+    width: 42px; height: 42px;
+    border: 2px solid #1a1a2e;
+    border-radius: 8px;
+    background: #fff;
+    font-family: 'Space Mono', monospace;
+    font-size: 1rem; font-weight: 700;
+    cursor: pointer;
+    transition: background .15s, transform .1s;
+    color: #1a1a2e;
+  }}
+  .num-btn:hover  {{ background: #e0e7ff; transform: scale(1.08); }}
+  .num-btn:active {{ background: #bfdbfe; }}
+  .num-btn.erase  {{ color: #e63946; border-color: #e63946; }}
+
+  #hint-label {{
+    font-family: 'Space Mono', monospace;
+    font-size: .8rem; color: #555;
+    margin-top: 8px;
+  }}
+</style>
+</head>
+<body>
+
+<div id="grid"></div>
+<div id="numpad"></div>
+<div id="hint-label">Click a cell, then press a number key or tap a button</div>
+
+<script>
+const BOARD    = {board_json};
+const GIVEN    = {given_json};
+const SOLUTION = {solution_json};
+const HINT     = {hint_json};
+const WON      = {won_json};
+const N        = {n};
+const BR       = {br};
+const BC       = {bc};
+
+let selected = null;   // [r, c] or null
+
+// ── Build grid ────────────────────────────────────────────────────────────
+const grid = document.getElementById('grid');
+
+for (let r = 0; r < N; r++) {{
+  for (let c = 0; c < N; c++) {{
+    const td = document.createElement('div');
+    td.className = 'cell';
+    td.dataset.r = r;
+    td.dataset.c = c;
+
+    // Thick box borders
+    if ((c + 1) % BC === 0 && c !== N - 1) td.classList.add('box-right');
+    if ((r + 1) % BR === 0 && r !== N - 1) td.classList.add('box-bottom');
+
+    if (GIVEN[r][c]) td.classList.add('given');
+
+    if (HINT && HINT[0] === r && HINT[1] === c) td.classList.add('hint-cell');
+
+    const v = BOARD[r][c];
+    if (v !== 0) {{
+      td.textContent = v;
+      if (!GIVEN[r][c] && v !== SOLUTION[r][c]) td.classList.add('wrong');
+    }}
+
+    if (!WON && !GIVEN[r][c]) {{
+      td.addEventListener('click', () => selectCell(r, c));
+    }}
+
+    grid.appendChild(td);
+  }}
+}}
+
+// ── Build numpad ──────────────────────────────────────────────────────────
+const numpad = document.getElementById('numpad');
+for (let v = 1; v <= N; v++) {{
+  const btn = document.createElement('button');
+  btn.className = 'num-btn';
+  btn.textContent = v;
+  btn.addEventListener('click', () => placeValue(v));
+  numpad.appendChild(btn);
+}}
+const erase = document.createElement('button');
+erase.className = 'num-btn erase';
+erase.textContent = '✕';
+erase.addEventListener('click', () => placeValue(0));
+numpad.appendChild(erase);
+
+// ── Selection ─────────────────────────────────────────────────────────────
+function getCell(r, c) {{
+  return grid.children[r * N + c];
+}}
+
+function selectCell(r, c) {{
+  // Deselect old
+  grid.querySelectorAll('.selected,.peer').forEach(el => {{
+    el.classList.remove('selected', 'peer');
+  }});
+  selected = [r, c];
+  getCell(r, c).classList.add('selected');
+
+  // Highlight peers (same row, col, box)
+  for (let i = 0; i < N; i++) {{
+    if (i !== c) getCell(r, i).classList.add('peer');
+    if (i !== r) getCell(i, c).classList.add('peer');
+  }}
+  const boxR = Math.floor(r / BR) * BR;
+  const boxC = Math.floor(c / BC) * BC;
+  for (let dr = 0; dr < BR; dr++) {{
+    for (let dc = 0; dc < BC; dc++) {{
+      const pr = boxR + dr, pc = boxC + dc;
+      if (pr !== r || pc !== c) getCell(pr, pc).classList.add('peer');
+    }}
+  }}
+}}
+
+// ── Place value ───────────────────────────────────────────────────────────
+function placeValue(v) {{
+  if (!selected || WON) return;
+  const [r, c] = selected;
+  if (GIVEN[r][c]) return;
+
+  // Optimistic update
+  const td = getCell(r, c);
+  if (v === 0) {{
+    td.textContent = '';
+    td.classList.remove('wrong', 'hint-cell');
+    BOARD[r][c] = 0;
+  }} else {{
+    td.textContent = v;
+    BOARD[r][c] = v;
+    td.classList.remove('hint-cell');
+    if (v !== SOLUTION[r][c]) td.classList.add('wrong');
+    else td.classList.remove('wrong');
+  }}
+
+  // Send to Streamlit
+  window.parent.postMessage({{
+    type: 'streamlit:setComponentValue',
+    value: {{r, c, v}}
+  }}, '*');
+}}
+
+// ── Keyboard ──────────────────────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {{
+  if (!selected) return;
+  const [r, c] = selected;
+  if (e.key === 'Backspace' || e.key === 'Delete' || e.key === '0') {{
+    placeValue(0); return;
+  }}
+  const num = parseInt(e.key);
+  if (!isNaN(num) && num >= 1 && num <= N) {{
+    placeValue(num);
+  }}
+  // Arrow key navigation
+  const moves = {{ ArrowUp:[-1,0], ArrowDown:[1,0], ArrowLeft:[0,-1], ArrowRight:[0,1] }};
+  if (moves[e.key]) {{
+    const [dr, dc] = moves[e.key];
+    const nr = Math.max(0, Math.min(N-1, r+dr));
+    const nc = Math.max(0, Math.min(N-1, c+dc));
+    if (!GIVEN[nr][nc]) selectCell(nr, nc);
+    else selectCell(nr, nc);   // still select even if given, just can't type
+    e.preventDefault();
+  }}
+}});
+</script>
+</body>
+</html>
+"""
+
+# Height: grid + numpad + label
+component_height = grid_px + 80 + 20 + 30
+
+result = components.html(html, height=component_height, scrolling=False)
+
+# When the component sends a value back, store and rerun
+if result is not None and isinstance(result, dict):
+    st.session_state.last_move = result
+    st.rerun()
+
+# ── Auto-refresh timer ────────────────────────────────────────────────────────
 if st.session_state.running and not st.session_state.won:
     time.sleep(1)
     st.rerun()
